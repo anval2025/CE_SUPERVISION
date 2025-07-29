@@ -14,84 +14,141 @@ def invitado_dashboard():
             st.session_state['usuario'] = ''
             st.experimental_rerun()
 
-    st.title("Disponibilidad de equipo")
+    st.markdown("<h1 style='color:black;'>Disponibilidad de equipo</h1>", unsafe_allow_html=True)
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
-    # Estado global
     if 'mostrar_listado' not in st.session_state:
         st.session_state['mostrar_listado'] = None
     if 'mostrar_grafico' not in st.session_state:
         st.session_state['mostrar_grafico'] = False
+    if 'mostrar_grafico_gruas' not in st.session_state:
+        st.session_state['mostrar_grafico_gruas'] = False
 
-    # Botón para mostrar gráficos
-    if not st.session_state['mostrar_grafico']:
-        if st.button("📊 Mostrar gráficos"):
-            st.session_state['mostrar_grafico'] = True
-            st.rerun()
-
-    # Si mostrar_grafico está activado, mostramos filtros y gráfico
-    if st.session_state['mostrar_grafico']:
-        # Filtro por ubicación
-        c.execute("SELECT DISTINCT location FROM equipos")
-        ubicaciones = [row[0] for row in c.fetchall()]
-        ubicacion_seleccionada = st.selectbox("Seleccionar ubicación", ubicaciones)
-
-        # Filtro por tipo de equipo
-        c.execute("SELECT DISTINCT tipo_equipo FROM equipos WHERE location = ?", (ubicacion_seleccionada,))
-        tipos_equipo = ["TODOS"] + [row[0] for row in c.fetchall()]
-        tipo_seleccionado = st.selectbox("Seleccionar tipo de equipo", tipos_equipo)
-
-        col_filtros = st.columns([1, 1])
-        with col_filtros[0]:
-            if st.button("🔄 Actualizar gráfico"):
-                pass  # solo se refresca automáticamente
-
-        with col_filtros[1]:
-            if st.button("❌ Cerrar gráfico"):
-                st.session_state['mostrar_grafico'] = False
-                st.rerun()
-
-        mostrar_grafico(conn, ubicacion_seleccionada, tipo_seleccionado)
-        conn.close()
-        return
-
-    # Mostrar tablas por ubicación
     c.execute("SELECT DISTINCT location FROM equipos")
     ubicaciones = [row[0] for row in c.fetchall()]
 
-    for ubicacion in ubicaciones:
-        st.subheader(f"Ubicación: {ubicacion}")
+    # Botones principales
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("📊 Mostrar gráficos generales"):
+            st.session_state['mostrar_grafico'] = True
+            st.session_state['mostrar_grafico_gruas'] = False
+            st.session_state['mostrar_listado'] = None
+    with col2:
+        if st.button("🚛 Mostrar gráficos de grúas móviles para llenos"):
+            st.session_state['mostrar_grafico_gruas'] = True
+            st.session_state['mostrar_grafico'] = False
+            st.session_state['mostrar_listado'] = None
 
-        c.execute("""
-            SELECT tipo_equipo,
-                SUM(CASE WHEN status = 'DISPONIBLE' THEN 1 ELSE 0 END) as disponibles,
-                SUM(CASE WHEN status = 'NO DISPONIBLE' THEN 1 ELSE 0 END) as no_disponibles,
-                SUM(CASE WHEN status = 'NO DISPONIBLE ALTA INVERSION' THEN 1 ELSE 0 END) as no_disponibles_inversion
-            FROM equipos
-            WHERE location = ?
-            GROUP BY tipo_equipo
-        """, (ubicacion,))
-        rows = c.fetchall()
+    # Mostrar gráficos generales
+    if st.session_state['mostrar_grafico']:
+        tipo_equipo = st.selectbox("Seleccionar tipo de equipo", ["Todos"] + list(set(row[0] for row in c.execute("SELECT tipo_equipo FROM equipos"))))
+        st.markdown("### 📈 Gráficos por ubicación")
+        for ubicacion in ubicaciones:
+            if tipo_equipo != "Todos":
+                c.execute("""
+                    SELECT tipo_equipo,
+                        SUM(CASE WHEN status = 'DISPONIBLE' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN status = 'NO DISPONIBLE' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN status = 'NO DISPONIBLE ALTA INVERSION' THEN 1 ELSE 0 END)
+                    FROM equipos
+                    WHERE location = ? AND tipo_equipo = ?
+                    GROUP BY tipo_equipo
+                """, (ubicacion, tipo_equipo))
+            else:
+                c.execute("""
+                    SELECT tipo_equipo,
+                        SUM(CASE WHEN status = 'DISPONIBLE' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN status = 'NO DISPONIBLE' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN status = 'NO DISPONIBLE ALTA INVERSION' THEN 1 ELSE 0 END)
+                    FROM equipos
+                    WHERE location = ?
+                    GROUP BY tipo_equipo
+                """, (ubicacion,))
+            rows = c.fetchall()
+            if rows:
+                df = pd.DataFrame(rows, columns=["Tipo", "Disponibles", "No disponibles", "Alta inversión"])
+                fig = go.Figure()
+                fig.add_bar(x=df["Tipo"], y=df["Disponibles"], name="Disponibles", marker_color="blue")
+                fig.add_bar(x=df["Tipo"], y=df["No disponibles"], name="No disponibles", marker_color="gray")
+                fig.add_bar(x=df["Tipo"], y=df["Alta inversión"], name="Alta inversión", marker_color="black")
+                fig.update_layout(barmode='group', title=f"Ubicación: {ubicacion}")
+                st.plotly_chart(fig, use_container_width=True)
+        if st.button("❌ Cerrar gráficos"):
+            st.session_state['mostrar_grafico'] = False
 
-        df = pd.DataFrame(rows, columns=["Tipo Equipo", "Disponibles", "No Disponibles", "No Disponibles Alta Inversión"])
-        st.dataframe(df)
+    # Mostrar gráficos grúa móviles con texto central del total disponible/total
+    elif st.session_state['mostrar_grafico_gruas']:
+        st.markdown("### 🚛 Gráficos de GRUA MOVIL MANIPULADOR PARA LLENOS")
+        for ubicacion in ubicaciones:
+            c.execute("""
+                SELECT 
+                    SUM(CASE WHEN status = 'DISPONIBLE' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'NO DISPONIBLE' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'NO DISPONIBLE ALTA INVERSION' THEN 1 ELSE 0 END)
+                FROM equipos
+                WHERE tipo_equipo = 'GRUA MOVIL MANIPULADOR PARA LLENOS' AND location = ?
+            """, (ubicacion,))
+            resultado = c.fetchone()
+            if resultado and any(resultado):
+                disponibles, no_disp, no_disp_ai = resultado
+                total = disponibles + no_disp + no_disp_ai
+                porcentaje = round((disponibles / total) * 100, 1) if total else 0
+                fig = go.Figure(data=[go.Pie(
+                    labels=['DISPONIBLE', 'NO DISPONIBLE', 'ALTA INVERSIÓN'],
+                    values=[disponibles, no_disp, no_disp_ai],
+                    marker=dict(colors=["blue", "gray", "black"]),
+                    hole=0.5,
+                    textinfo='label+percent'
+                )])
+                fig.update_layout(
+                    title=f"{ubicacion} - {porcentaje}% DISPONIBLE",
+                    showlegend=True,
+                    annotations=[dict(
+                        text=f"{disponibles} de {total}",
+                        x=0.5,
+                        y=0.5,
+                        font_size=20,
+                        showarrow=False
+                    )]
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        if st.button("❌ Cerrar gráficos"):
+            st.session_state['mostrar_grafico_gruas'] = False
 
-        cols = st.columns(len(rows))
-        for i, row in enumerate(rows[::-1]):
-            tipo_equipo = row[0]
-            with cols[i]:
-                if st.button(tipo_equipo, key=f"{ubicacion}_{tipo_equipo}"):
-                    st.session_state['mostrar_listado'] = (tipo_equipo, ubicacion)
+    # Mostrar tablas y botones
+    elif not st.session_state['mostrar_grafico'] and not st.session_state['mostrar_grafico_gruas']:
+        for ubicacion in ubicaciones:
+            st.subheader(f"Ubicación: {ubicacion}")
+            c.execute("""
+                SELECT tipo_equipo,
+                    SUM(CASE WHEN status = 'DISPONIBLE' THEN 1 ELSE 0 END) as disponibles,
+                    SUM(CASE WHEN status = 'NO DISPONIBLE' THEN 1 ELSE 0 END) as no_disponibles,
+                    SUM(CASE WHEN status = 'NO DISPONIBLE ALTA INVERSION' THEN 1 ELSE 0 END) as no_disponibles_inversion
+                FROM equipos
+                WHERE location = ?
+                GROUP BY tipo_equipo
+            """, (ubicacion,))
+            rows = c.fetchall()
+            df = pd.DataFrame(rows, columns=["Tipo Equipo", "Disponibles", "No Disponibles", "No Disponibles Alta Inversión"])
+            st.dataframe(df)
 
-        if st.session_state['mostrar_listado'] and st.session_state['mostrar_listado'][1] == ubicacion:
-            tipo, ubi = st.session_state['mostrar_listado']
-            st.markdown("---")
-            st.subheader(f"Listado de Equipos - {tipo} en {ubi}")
-            mostrar_equipos(conn, tipo, ubi)
-            if st.button("Cerrar listado", key=f"cerrar_{ubicacion}"):
-                st.session_state['mostrar_listado'] = None
-                st.experimental_rerun()
+            cols = st.columns(len(rows))
+            for i, row in enumerate(rows[::-1]):
+                tipo_equipo = row[0]
+                with cols[i]:
+                    if st.button(tipo_equipo, key=f"{ubicacion}_{tipo_equipo}"):
+                        st.session_state['mostrar_listado'] = (tipo_equipo, ubicacion)
+
+            if st.session_state['mostrar_listado'] and st.session_state['mostrar_listado'][1] == ubicacion:
+                tipo, ubi = st.session_state['mostrar_listado']
+                st.markdown("---")
+                st.subheader(f"Listado de Equipos - {tipo} en {ubi}")
+                mostrar_equipos(conn, tipo, ubi)
+                if st.button("Cerrar listado", key=f"cerrar_{ubicacion}"):
+                    st.session_state['mostrar_listado'] = None
+                    st.experimental_rerun()
 
     conn.close()
 
@@ -122,57 +179,3 @@ def mostrar_equipos(conn, tipo_equipo, ubicacion):
         file_name=f"equipos_{tipo_equipo}_{ubicacion}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-def mostrar_grafico(conn, ubicacion, tipo_equipo):
-    c = conn.cursor()
-
-    if tipo_equipo == "TODOS":
-        c.execute("""
-            SELECT tipo_equipo,
-                SUM(CASE WHEN status = 'DISPONIBLE' THEN 1 ELSE 0 END) as disponibles,
-                SUM(CASE WHEN status = 'NO DISPONIBLE' THEN 1 ELSE 0 END) as no_disponibles,
-                SUM(CASE WHEN status = 'NO DISPONIBLE ALTA INVERSION' THEN 1 ELSE 0 END) as no_disponibles_inversion
-            FROM equipos
-            WHERE location = ?
-            GROUP BY tipo_equipo
-        """, (ubicacion,))
-    else:
-        c.execute("""
-            SELECT tipo_equipo,
-                SUM(CASE WHEN status = 'DISPONIBLE' THEN 1 ELSE 0 END) as disponibles,
-                SUM(CASE WHEN status = 'NO DISPONIBLE' THEN 1 ELSE 0 END) as no_disponibles,
-                SUM(CASE WHEN status = 'NO DISPONIBLE ALTA INVERSION' THEN 1 ELSE 0 END) as no_disponibles_inversion
-            FROM equipos
-            WHERE location = ? AND tipo_equipo = ?
-            GROUP BY tipo_equipo
-        """, (ubicacion, tipo_equipo))
-
-    data = c.fetchall()
-
-    if not data:
-        st.warning("No hay datos para mostrar.")
-        return
-
-    tipos = [d[0] for d in data]
-    disponibles = [d[1] for d in data]
-    no_disponibles = [d[2] for d in data]
-    alta_inversion = [d[3] for d in data]
-
-    fig = go.Figure(data=[
-        go.Bar(name='Disponible', x=tipos, y=disponibles,
-               marker_color='lightblue', text=disponibles, textposition='auto'),
-        go.Bar(name='No disponible', x=tipos, y=no_disponibles,
-               marker_color='gray', text=no_disponibles, textposition='auto'),
-        go.Bar(name='No disponible alta inversión', x=tipos, y=alta_inversion,
-               marker_color='black', text=alta_inversion, textposition='auto'),
-    ])
-
-    fig.update_layout(
-        barmode='group',
-        title=f'Disponibilidad en {ubicacion}' if tipo_equipo == "TODOS" else f'Disponibilidad de {tipo_equipo} en {ubicacion}',
-        xaxis_title='Tipo de equipo',
-        yaxis_title='Cantidad',
-        plot_bgcolor='white'
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
